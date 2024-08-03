@@ -12,4 +12,15 @@ char:1
     + CategoryInfo          : ObjectNotFound: (.\script\update_version.ps1:Str 
    ing) [], ParentContainsErrorRecordException
     + FullyQualifiedErrorId : CommandNotFoundException
- 
+
+
+
+
+Generating script.
+========================== Starting Command Output ===========================
+"C:\Windows\system32\cmd.exe" /D /E:ON /V:OFF /S /C "CALL "D:\VSTSAgent_Work\2.136.1\_temp\938a29fc-0b8e-40f0-819f-298e35a781a2.cmd""
+fatal: not a git repository (or any of the parent directories): .git
+The system cannot find the path specified.
+##[error]Cmd.exe exited with code '128'.
+Finishing: CmdLine
+
