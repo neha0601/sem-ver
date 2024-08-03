@@ -1,0 +1,135 @@
+# -----------------------------------------------------------------------------
+# .SYNOPSIS
+#   This step will perform a build for a .NET Core application and attach the 
+#   published output as an artifact
+
+# .ASSUMPTIONS:
+#   - The application is built in .NET Core
+
+# .NOTES
+#   File Name      : base.yaml
+#   Pre-requisite  : Pipeline file to call this as a template stage
+
+# -----------------------------------------------------------------------------
+
+parameters:
+  - name: project_name
+    type: string
+    displayName: "Name/Identifier of the application/project"
+
+  - name: dotnet_version
+    type: string
+    displayName: "Version of .NET Core (6.x, 7.x, etc.)"
+    default: "6.x"
+    values:
+    - "2.x"
+    - "3.x"
+    - "4.x"
+    - "5.x"
+    - "6.x"
+    - "7.x"
+    - "8.x"
+
+  - name: build_path
+    type: string
+    displayName: "The path to the solution, project, or directory to build"
+    default: "**/*.csproj"
+
+  - name: build_configuration
+    type: string
+    displayName: "Build configuration to use (Debug, Release, etc.)"
+    default: "Release"
+
+  - name: nuget_config_path
+    type: string
+    displayName: "Path to the nuget config file"
+    default: "./PipelineLibraries/Build/nuget.config"
+
+  # - name: dependency_feed
+  #   type: string
+  #   displayName: "Name of an Azure DevOps dependency feed"
+  #   default: ""
+
+  - name: additional_build_arguments
+    type: string
+    displayName: "Additional build arguments"
+    default: ""
+
+  - name: enable_publish_web_projects
+    type: boolean
+    displayName: "Enable Publish Web Project"
+    default: true
+
+  - name: additional_usersteps # the name of the parameter
+    type: stepList # data type is StepList
+    default: [] # default value of buildSteps
+
+jobs:
+  - job: DotNetBuild
+    displayName: Build - .NET Core
+    dependsOn: []
+    steps:
+    - checkout: self
+      clean: true
+    - checkout: Library
+
+    - ${{ each step in parameters.additional_usersteps }}:
+      - ${{ each pair in step }}:
+        - ${{ if eq(pair.key, 'inputs') }}:
+          - ${{ each attribute in pair.value }}:
+            - ${{ if eq(attribute.key, 'repository') }}:
+              - ${{ step }}
+
+    - task: NuGetToolInstaller@1
+    - task: UseDotNet@2
+      displayName: Use DotNet ${{ parameters.dotnet_version }}
+      inputs:
+        packageType: 'sdk'
+        version: ${{ parameters.dotnet_version }}
+
+    - task: NuGetAuthenticate@1
+      displayName: 'Authenticate to Azure DevOps NuGet' 
+
+    - script: |
+       git fetch --tags
+       latestVersion=$(git describe --tags $(git rev-list --tags --max-count=1) 2>/dev/null )
+       echo "##vso[task.setvariable variable=latestVersion]$latestVersion"
+      # displayName: 'Fetch Latest Git Tags and Store Latest Version Tag'  
+
+    # - ${{ if ne(parameters.dependency_feed, '') }}:
+    #   - task: DotNetCoreCLI@2
+    #     displayName: Restore Nuget Packages from DevOps Feed
+    #     inputs:
+    #       command: 'restore'
+    #       projects: |
+    #         ${{ parameters.build_path }}
+    #       feedsToUse: select
+    #       includeNuGetOrg: false
+    #       vstsFeed: ${{ parameters.dependency_feed }}
+
+    # - ${{ if eq(parameters.dependency_feed, '') }}:
+    - task: DotNetCoreCLI@2
+      displayName: Restore Nuget Packages from nuget.config sources
+      inputs:
+        command: 'restore'
+        projects: |
+          ${{ parameters.build_path }}
+        feedsToUse: config
+        nugetConfigPath: ${{ parameters.nuget_config_path }}
+
+    - task: DotNetCoreCLI@2
+      displayName: Publish Build
+      inputs:
+        command: 'publish'
+        publishWebProjects: ${{ parameters.enable_publish_web_projects }}
+        projects: |
+          ${{ parameters.build_path }}
+        arguments: '--no-restore --configuration ${{ parameters.build_configuration }} --output publish/ ${{ parameters.additional_build_arguments }}'
+        zipAfterPublish: false
+        modifyOutputPath: false
+
+    - task: PublishBuildArtifacts@1
+      displayName: Publish Build Artifacts
+      inputs:
+        pathToPublish: 'publish/'
+        artifactName: '${{ parameters.project_name }}-Build-${{ variables.latestVersion }}'
