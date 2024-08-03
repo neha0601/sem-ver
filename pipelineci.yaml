@@ -1,0 +1,211 @@
+# -------------------------------------------------------------------------------------------------------------
+# Based on template from: https://dev.azure.com/marathonpetroleum/EnterpriseDevOpsBuild/_git/PipelineTemplates
+# -------------------------------------------------------------------------------------------------------------
+
+# Define trigger options
+trigger:
+  branches:
+    include:
+    - 'master'
+   # - 'feature'                         # * will include all the branches
+    # exclude:                    # List of branch which should not trigger pipeline
+    # - features/experimental/*   # All branch name that starts with features/experimental/ will not trigger pipeline
+  paths:
+    exclude:                      # List of files path that should not trigger pipeline, e.g:path/* can be used exclude all files inside that path location
+    - README.md
+
+# Define pull request trigger options
+#pr:  #pr: none will Disable pull request triggers.
+#  branches: 
+#    include:                      # List of branches which trigger a run when a pull request is raised or a push is made to the source branch of a raised pull request.
+#    - master 
+#    - features/*
+    # exclude:                    # List of branch for which PR should not trigger pipeline
+    # - features/experimental/*   # PR raised to branch name that starts with features/experimental/ will not trigger pipeline
+  #paths:
+   # exclude:                      # PR raised for following list of files path should not trigger pipeline, e.g:path/* can be used exclude all files inside that path location
+    #- README.md
+
+name: ${{ parameters.majorVersion }}.${{ parameters.minorVersion }}.$(Date:yyyyMMdd)$(Rev:.r)
+
+resources:
+  repositories:
+    - repository: RefiningPilotWebApp
+      type: git
+      name: RefiningPilot/RefiningPilotWebApp
+    - repository: Library
+      type: git
+      name: EnterpriseDevOpsBuild/PipelineLibraries
+      ref: master
+    - repository: AppSec
+      type: git
+      name: Cybersecurity/DevSecOps-Pipeline-Stages
+      ref: releases/latest
+
+# Release wide variables
+variables:
+  - name: pipelineversion
+    value: 1.0.0
+  - group: Cybersecurity.Global
+  - template: variables.global.yaml
+  - name: system.debug
+    value: false
+
+pool: $(agent_pool)
+
+parameters:
+  - name: majorVersion
+    type: string
+    displayName: "Major Version"
+    default: 1
+  - name: minorVersion
+    type: string
+    displayName: "Minor Version"
+    default: 0
+
+# -------------------------------------------------------------------------------------------------------------
+# -------------------------------------------------------------------------------------------------------------
+
+stages:
+  - stage: DevOps
+    pool:
+      name: $(agent_pool)
+    displayName: Required DevOps Stage
+    variables:
+      - template: ./variables/variables.ci.yaml
+    jobs:
+      - job: Echo
+        steps:
+          - script: echo build initated - $(Build.BuildNumber)
+
+    # - template: ./Logging/Global.yaml@Library
+    #   parameters:
+    #     team: ${{ variables.team }} # Parse the team name from the first part of the repository name.
+    #     application: ${{ variables.application }} # Parse the applciation name from the second part of the repository name.
+    #     function: ${{ variables.function }} # Mutable list of the target state features.i.e., Snyk, Unit Testing, SNOW etc.
+
+    # - template: ./Logging/Team.yaml@Library
+    #   parameters:
+    #     function: ${{ variables.function }} # Mutable list of the target state features.i.e., Snyk, Unit Testing, SNOW etc.
+    #     status: ${{ variable.status }} # Reports the sttaus of the pipeline if it has passed or failed.
+    #     report_to_team:${{ variable.contact }} # Contact can be email, Teams message, sending notification, dropping files in a predefined location.
+# -------------------------------------------------------------------------------------------------------------
+  - stage: SemanticVersioning
+    dependsOn:
+      -  DevOps
+    pool:
+      name: $(agent_pool)
+    displayName: Semantic Versioning
+    #variables:
+      #- template: ./variables/variables.ci.yaml
+    jobs:
+      - job: SemanticVersioning
+        steps:
+        - checkout: self
+          fetchDepth: 0
+
+        - powershell: |
+           # Call the versioning script
+           .\script\update_version.ps1
+          displayName: 'Run Versioning Script'
+          env:
+            GIT_PAT: $(GIT_PAT) # Use the PAT as an environment variable
+
+# -------------------------------------------------------------------------------------------------------------
+
+  - stage: Build
+    dependsOn:
+      - SemanticVersioning
+    pool:
+      name: $(agent_pool)
+    displayName: Build the Application
+    variables:
+      - template: ./variables/variables.ci.yaml
+    jobs:
+ 
+      # .NET Core
+      - template:  ./base.yml #./Build/DotNet-Core/base.yaml@Library
+        parameters:
+          project_name: ${{ variables.project_name }}   # Required. Identifier for the application/project
+          dotnet_version: '8.x'   # Optional. 6.x or 7.x - Default='6.x'
+          build_path: ${{ variables.build_path }}   # Optional. Build path to the solution - Default='**/*.csproj'
+          build_configuration: ${{ variables.build_configuration }}   # Optional. Build configuration - Default='Release'
+          nuget_config_path: ${{ variables.nuget_config_path }}   # Optional. Nuget config filepath - Default='./PipelineLibraries/Build/nuget.config'
+          additional_build_arguments: # ${{ variables.additional_build_arguments }}   # Optional. Additional build arguments - Default=''
+
+
+# -------------------------------------------------------------------------------------------------------------
+
+  - stage: Test
+    dependsOn:
+      - DevOps
+      - SemanticVersioning
+      - Build
+    pool:
+      name: $(agent_pool)
+    displayName: Run Tests
+    variables:
+      - template: ./variables/variables.ci.yaml
+      - group: Cybersecurity.Global
+    jobs:
+      # .NET Core
+     - template: ./Test/DotNet-Core/unit.yaml@Library #./base.yml
+       parameters:
+        project_name: ${{ variables.project_name }}   # Required. Identifier for the application/project
+        dotnet_version: '8.x'   # Optional. 6.x or 7.x - Default='6.x'
+        build_path: ${{ variables.build_path }}   # Optional. Build path to the solution - Default='**/*.csproj'
+        build_configuration: ${{ variables.build_configuration }}   # Optional. Build configuration - Default='Release'
+        nuget_config_path: ${{ variables.nuget_config_path }}   # Optional. Nuget config filepath - Default='./PipelineLibraries/Build/nuget.config'
+        additional_build_arguments: ${{ variables.additional_build_arguments }}   # Optional. Additional build arguments - Default=''
+        test_path:  ${{ variables.test_path }}   # Optional. Build path - Default='**/*.Tests.csproj'
+        test_runner: ${{ variables.test_runner }}   # Optional. Test runner (VSTest, NUnit, XUnit, etc.) - Default='VSTest'
+
+  # #     - ${{ if or(eq(variables['Build.SourceBranch'], 'refs/heads/master'), eq(variables['Build.SourceBranch'], 'refs/heads/main')) }}:
+  #       - template: ./Test/DotNet-Framework/sonarqube.yaml@Library
+  #         parameters:
+  #           sonarqube_service_connection: ${{ variables.sonarqube_service_connection }}   # Required. Name of the SonarQube service connection
+  #           sonarqube_project_name: ${{ variables.sonarqube_project_name }}   # Required. Identifier for the application/project in SonarQube
+  #           solution_path: ${{ variables.solution_path }}   # Optional. Build path to the solution - Default='**/*.sln'
+  #           build_configuration: ${{ variables.build_configuration }}   # Optional. Build configuration - Default='Release'
+  #           build_platform: ${{ variables.build_platform }}   # Optional. Build platform - Default='Any CPU'
+  #           nuget_config_path: ${{ variables.nuget_config_path }}   # Optional. Nuget config filepath - Default='./PipelineLibraries/Build/nuget.config'
+  #           additional_build_arguments: ${{ variables.additional_build_arguments }}   # Optional. Additional build arguments - Default=''
+
+     - template: ./v1/Medallion/securitytest.${{ variables.security_classification }}.yaml@AppSec
+       parameters:
+         dotnet_version: '8.x'
+         build_path: ${{ variables.build_path }}  #${{ variables.solution_path }}
+         nuget_config_path: ${{ variables.nuget_config_path }}
+  #         # container_name: ${{ variables.project_name }}
+  #         # dockerfile_path: ${{ variables.dockerfile_path }}
+
+  #     # .NET Core
+  #     - template: ./Test/DotNet-Core/unit.yaml@Library
+  #       parameters:
+  #         project_name: ${{ variables.project_name }}   # Required. Identifier for the application/project
+  #         dotnet_version: '6.x'   # Optional. 6.x or 7.x - Default='6.x'
+  #         build_path:  ${{ variables.build_path }}   # Optional. Build path to the solution - Default='**/*.csproj'
+  #         build_configuration: ${{ variables.build_configuration }}   # Optional. Build configuration - Default='Release'
+  #         nuget_config_path: ${{ variables.nuget_config_path }}   # Optional. Nuget config filepath - Default='./PipelineLibraries/Build/nuget.config'
+  #         additional_build_arguments: ${{ variables.additional_build_arguments }}   # Optional. Additional build arguments - Default=''
+  #         test_path: ${{ variables.test_path }}   # Optional. Build path - Default='**/*.Tests.csproj'
+  #         test_runner: ${{ variables.test_runner }}   # Optional. Test runner (VSTest, NUnit, XUnit, etc.) - Default='VSTest'
+
+  #     - ${{ if or(eq(variables['Build.SourceBranch'], 'refs/heads/master'), eq(variables['Build.SourceBranch'], 'refs/heads/main')) }}:
+  #       - template: ./Test/DotNet-Core/sonarqube.yaml@Library
+  #         parameters:
+  #           sonarqube_service_connection: ${{ variables.sonarqube_service_connection }}   # Required. Name of the SonarQube service connection
+  #           sonarqube_project_name: ${{ variables.sonarqube_project_name }}   # Required. Identifier for the application/project in SonarQube
+  #           dotnet_version: '6.x'   # Optional. 6.x or 7.x - Default='6.x'
+  #           build_path: ${{ variables.build_path }}   # Optional. Build path to the solution - Default='**/*.csproj'
+  #           build_configuration: ${{ variables.build_configuration }}   # Optional. Build configuration - Default='Release'
+  #           nuget_config_path: ${{ variables.nuget_config_path }}   # Optional. Nuget config filepath - Default='./PipelineLibraries/Build/nuget.config'
+  #           additional_build_arguments: ${{ variables.additional_build_arguments }}   # Optional. Additional build arguments - Default=''
+
+  #     - template: ./Medallion/securitytest.${{ variables.security_classification }}.yaml@AppSec
+  #       parameters:
+  #         dotnet_version: '6.x'
+  #         build_path: ${{ variables.build_path }}
+  #         nuget_config_path: ${{ variables.nuget_config_path }}
+  #         # container_name: ${{ variables.project_name }}
+  #         # dockerfile_path: ${{ variables.dockerfile_path }}
